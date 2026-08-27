@@ -1,0 +1,5 @@
+hello world hello rust hello nanochat rust is fast rust is safe
+small local language models are useful for research and learning
+Rust provides predictable performance and strong memory safety
+nanochat-rs trains a tiny decoder transformer on a local machine
+correctness reproducibility and clear checkpoints matter

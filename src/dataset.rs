@@ -3,13 +3,14 @@ use anyhow::{Context, Result};
 use std::{
     fs::File,
     io::{BufRead, BufReader, Read},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 /// Sequential, bounded-memory token source. Text files are read line by line;
 /// `.u32` files contain little-endian uint32 token ids.
 pub struct StreamingDataset {
     reader: BufReader<File>,
+    path: PathBuf,
     kind: DatasetKind,
     tokenizer: Tokenizer,
     pending: Vec<u32>,
@@ -32,6 +33,7 @@ impl StreamingDataset {
         };
         Ok(Self {
             reader: BufReader::new(file),
+            path: path.to_path_buf(),
             kind,
             tokenizer,
             pending: Vec::new(),
@@ -73,7 +75,10 @@ impl StreamingDataset {
     pub fn next_window(&mut self, sequence_length: usize) -> Result<Option<(Vec<u32>, Vec<u32>)>> {
         while self.pending.len() < sequence_length + 1 {
             if !self.fill()? {
-                return Ok(None);
+                self.reader = BufReader::new(File::open(&self.path)?);
+                if self.pending.is_empty() && !self.fill()? {
+                    return Ok(None);
+                }
             }
         }
         let input = self.pending[..sequence_length].to_vec();

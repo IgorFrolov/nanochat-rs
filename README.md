@@ -29,7 +29,7 @@ cargo run -- bench --depth 4 --seq-len 128 --batch-size 1 --steps 10
 cargo run -- train --data data/train.txt --seq-len 128 --steps 100
 cargo run -- sft --conversation data/example-conversation.json --seq-len 128 --steps 100
 cargo run -- tokenizer train --input data/train.txt --output data/tokenizer.json --vocab-size 1024
-cargo run -- train --tokenizer data/tokenizer.json --text "hello rust hello rust" --seq-len 8 --steps 10
+cargo run -- train --tokenizer data/tokenizer.json --text "hello rust hello rust" --seq-len 8 --steps 10 --checkpoint checkpoints/d4-bpe
 cargo run -- train --resume checkpoints/d4 --steps 200 --seq-len 128
 ```
 
@@ -70,6 +70,8 @@ detects and uses it automatically.
 
 `--data` enables bounded-memory sequential loading. Regular files are tokenized
 line by line; files ending in `.u32` are read as little-endian `u32` token ids.
+The streaming loader cycles at EOF, so a small local corpus can support a longer
+development run without being copied into memory.
 The library exposes assistant-only masked cross-entropy and typed conversation
 rendering. SFT accepts one JSON conversation or a streaming JSONL file, one
 conversation per line. The special-token names and order follow upstream, while

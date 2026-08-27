@@ -9,7 +9,7 @@
 | `ReLU^2` MLP | `src/model/mlp.rs` | implemented | model smoke | matches upstream activation |
 | `tokenizer.py` | `src/tokenizer.rs`, `src/bpe.rs` | Rust BPE subset | roundtrip/determinism tests | standalone byte-level BPE JSON format; pretraining integration; not tiktoken pickle-compatible |
 | `dataloader.py` | `src/dataloader.rs` | implemented subset | loader smoke | deterministic in-memory windows |
-| dataset input | `src/dataset.rs` | implemented subset | text/u32 tests | bounded-memory sequential windows; no shuffle/resume yet |
+| dataset input | `src/dataset.rs` | implemented subset | text/u32 tests | bounded-memory sequential cyclic windows; no shuffle/cursor resume yet |
 | `optim.py` AdamW | `src/optimizer.rs` | implemented subset | training/resume smoke | decoupled decay, serializable single-device moments |
 | `checkpoint_manager.py` | `src/checkpoint.rs`, `src/optimizer.rs` | implemented subset | CLI/resume smoke | model and AdamW moments in separate SafeTensors; resume state is single-device |
 | `engine.py` | `src/inference.rs`, `src/model/cache.rs` | implemented subset | generation/cache parity | byte/BPE generation, top-k/top-p, naive KV cache |

@@ -188,7 +188,20 @@ fn main() -> Result<()> {
                 Some(path) => nanochat_rs::bpe::BpeTokenizer::load(path)?.vocab_size(),
                 None => 266,
             };
-            let c = GptConfig::from_depth(depth, tokenizer_vocab, seq_len);
+            let c = if let Some(resume_dir) = &resume {
+                let resumed = checkpoint::load_config(resume_dir)?;
+                if resumed.vocab_size != tokenizer_vocab {
+                    anyhow::bail!("resume checkpoint vocabulary {} does not match selected tokenizer vocabulary {}", resumed.vocab_size, tokenizer_vocab);
+                }
+                resumed
+            } else {
+                GptConfig::from_depth(depth, tokenizer_vocab, seq_len)
+            };
+            let checkpoint = if tokenizer.is_some() && checkpoint == "checkpoints/d4" {
+                "checkpoints/d4-bpe".to_string()
+            } else {
+                checkpoint
+            };
             let t = TrainConfig {
                 steps,
                 sequence_length: seq_len,
