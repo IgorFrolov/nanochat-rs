@@ -13,7 +13,7 @@ reference, not as a binary checkpoint format.
 | Pretraining | Causal next-token prediction, AdamW, local text and `.u32` input |
 | SFT | JSON/JSONL conversations, assistant-only loss mask |
 | Tool use | Python/output tokens are reserved but execution is disabled |
-| Inference | Naive autoregressive generation, greedy/top-k/top-p; no KV cache |
+| Inference | Autoregressive generation, greedy/top-k/top-p, naive KV cache |
 | Distributed training | Not implemented |
 
 Compatibility claims should be added only after deterministic numerical fixtures

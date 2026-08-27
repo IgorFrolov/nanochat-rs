@@ -1,4 +1,4 @@
-use super::{attention::Attention, mlp::Mlp, norm::rms_norm};
+use super::{attention::Attention, cache::KvCache, mlp::Mlp, norm::rms_norm};
 use crate::config::GptConfig;
 use anyhow::Result;
 use candle_core::Tensor;
@@ -40,16 +40,29 @@ impl Gpt {
             blocks,
         })
     }
-    pub fn forward(&self, ids: &Tensor, targets: Option<&Tensor>) -> Result<Tensor> {
+    pub fn forward_with_cache(
+        &self,
+        ids: &Tensor,
+        targets: Option<&Tensor>,
+        mut cache: Option<&mut KvCache>,
+    ) -> Result<Tensor> {
         let mut x = self.tok_emb.forward(ids)?;
         x = rms_norm(&x, self.norm_eps)?;
-        for block in &self.blocks {
+        for (blocks_index, block) in self.blocks.iter().enumerate() {
             let h = rms_norm(&x, self.norm_eps)?;
-            x = x.add(&block.attn.forward(&h, self.config.context_length)?)?;
+            let attention_cache = cache.as_deref_mut().map(|cache| (cache, blocks_index));
+            x = x.add(
+                &block
+                    .attn
+                    .forward(&h, self.config.context_length, attention_cache)?,
+            )?;
             let h = rms_norm(&x, self.norm_eps)?;
             x = x.add(&block.mlp.forward(&h)?)?;
         }
         let logits = self.lm_head.forward(&rms_norm(&x, self.norm_eps)?)?;
+        if let Some(cache) = cache {
+            cache.advance(ids.dim(1)?);
+        }
         match targets {
             Some(y) => Ok(loss::cross_entropy(
                 &logits.flatten(0, 1)?,
@@ -57,5 +70,8 @@ impl Gpt {
             )?),
             None => Ok(logits),
         }
+    }
+    pub fn forward(&self, ids: &Tensor, targets: Option<&Tensor>) -> Result<Tensor> {
+        self.forward_with_cache(ids, targets, None)
     }
 }

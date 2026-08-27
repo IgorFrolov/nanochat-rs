@@ -20,6 +20,6 @@
 - [ ] Phase 6b: batched SFT and system/tool message support
 - [x] Phase 7a: validation cross-entropy and forward benchmark
 - [ ] Phase 7b: bits-per-byte evaluation and upstream evaluation tasks
-- [ ] Phase 8: KV cache and generation parity tests
+- [x] Phase 8: KV cache and generation parity tests
 - [ ] Phase 9: nanochat advanced features and profiling
 - [ ] Phase 10: optional CUDA/distributed backends

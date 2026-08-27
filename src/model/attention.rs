@@ -1,13 +1,18 @@
+use super::cache::KvCache;
 use super::norm::rms_norm;
 use anyhow::Result;
 use candle_core::{DType, Tensor, D};
 use candle_nn::{linear, Linear, Module, VarBuilder};
 
 pub fn apply_rope(x: &Tensor, base: f64) -> Result<Tensor> {
+    apply_rope_at(x, base, 0)
+}
+
+fn apply_rope_at(x: &Tensor, base: f64, start: usize) -> Result<Tensor> {
     let (_b, _h, t, d) = x.dims4()?;
     let half = d / 2;
     let dev = x.device();
-    let pos = Tensor::arange(0u32, t as u32, dev)?
+    let pos = Tensor::arange(start as u32, (start + t) as u32, dev)?
         .to_dtype(DType::F32)?
         .reshape((t, 1))?;
     let freq = Tensor::arange(0u32, half as u32, dev)?
@@ -61,23 +66,31 @@ impl Attention {
             eps,
         })
     }
-    pub fn forward(&self, x: &Tensor, context: usize) -> Result<Tensor> {
+    pub fn forward(
+        &self,
+        x: &Tensor,
+        context: usize,
+        cache: Option<(&mut KvCache, usize)>,
+    ) -> Result<Tensor> {
         let (b, t, _) = x.dims3()?;
-        let q = apply_rope(
+        let cache_start = cache.as_ref().map(|(cache, _)| cache.position).unwrap_or(0);
+        let q = apply_rope_at(
             &self
                 .q
                 .forward(x)?
                 .reshape((b, t, self.heads, self.head_dim))?
                 .transpose(1, 2)?,
             100000.,
+            cache_start,
         )?;
-        let mut k = apply_rope(
+        let mut k = apply_rope_at(
             &self
                 .k
                 .forward(x)?
                 .reshape((b, t, self.kv_heads, self.head_dim))?
                 .transpose(1, 2)?,
             100000.,
+            cache_start,
         )?;
         let q = rms_norm(&q, self.eps)?;
         k = rms_norm(&k, self.eps)?;
@@ -97,10 +110,19 @@ impl Attention {
                 .broadcast_as((b, self.kv_heads, repeats, t, self.head_dim))?
                 .reshape((b, self.heads, t, self.head_dim))?;
         }
+        let (k, v, start) = if let Some((cache, layer)) = cache {
+            let (keys, values, start) = cache.append(layer, k, v)?;
+            (keys, values, start)
+        } else {
+            (k, v, 0)
+        };
         let scale = (self.head_dim as f64).sqrt();
         let mut scores = q.matmul(&k.transpose(2, 3)?)?.affine(1. / scale, 0.)?;
+        let key_len = k.dim(2)?;
         let mask_data: Vec<f32> = (0..t)
-            .flat_map(|row| (0..t).map(move |col| if col <= row { 0.0 } else { -1e9 }))
+            .flat_map(|row| {
+                (0..key_len).map(move |col| if col <= start + row { 0.0 } else { -1e9 })
+            })
             .collect();
         let mask = Tensor::from_vec(mask_data, (t, t), x.device())?.to_dtype(scores.dtype())?;
         scores = scores.broadcast_add(&mask.unsqueeze(0)?.unsqueeze(0)?)?;

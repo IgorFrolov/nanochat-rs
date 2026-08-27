@@ -14,7 +14,7 @@ The current development milestone contains:
 - byte tokenizer and standalone byte-level BPE tokenizer;
 - bounded-memory plain-text and `.u32` dataset loading;
 - masked assistant-only loss and JSON/JSONL SFT training;
-- CPU/Metal inference, top-k/top-p sampling, evaluation, and benchmarking.
+- CPU/Metal inference, top-k/top-p sampling, naive KV cache, evaluation, and benchmarking.
 
 The Rust BPE artifact is deliberately standalone. It is not compatible with the
 upstream Python `tokenizer.pkl`/tiktoken artifact yet.

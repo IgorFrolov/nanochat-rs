@@ -4,7 +4,10 @@ use candle_nn::{AdamW, Optimizer, ParamsAdamW, VarBuilder, VarMap};
 use nanochat_rs::bpe::BpeTokenizer;
 use nanochat_rs::dataset::StreamingDataset;
 use nanochat_rs::loss::masked_cross_entropy;
-use nanochat_rs::{checkpoint, model::Gpt};
+use nanochat_rs::{
+    checkpoint,
+    model::{cache::KvCache, Gpt},
+};
 use nanochat_rs::{
     config::GptConfig,
     model::attention::apply_rope,
@@ -58,6 +61,28 @@ fn bpe_training_is_deterministic_and_roundtrips() -> anyhow::Result<()> {
     let ids = first.encode("hello rust");
     assert_eq!(first.decode(&ids), "hello rust");
     assert!(first.vocab_size() <= 289);
+    Ok(())
+}
+
+#[test]
+fn kv_cache_matches_full_forward_for_next_token() -> anyhow::Result<()> {
+    let device = Device::Cpu;
+    let config = GptConfig::from_depth(1, 266, 8);
+    let vars = VarMap::new();
+    let model = Gpt::new(config, VarBuilder::from_varmap(&vars, DType::F32, &device))?;
+    let prefix = Tensor::new(&[[1u32, 2, 3]], &device)?;
+    let next = Tensor::new(&[[4u32]], &device)?;
+    let full = Tensor::new(&[[1u32, 2, 3, 4]], &device)?;
+    let expected = model.forward(&full, None)?.i((0, 3))?.to_vec1::<f32>()?;
+    let mut cache = KvCache::new(1);
+    let _ = model.forward_with_cache(&prefix, None, Some(&mut cache))?;
+    let actual = model
+        .forward_with_cache(&next, None, Some(&mut cache))?
+        .i((0, 0))?
+        .to_vec1::<f32>()?;
+    for (left, right) in expected.iter().zip(actual.iter()) {
+        assert_relative_eq!(left, right, epsilon = 1e-4);
+    }
     Ok(())
 }
 

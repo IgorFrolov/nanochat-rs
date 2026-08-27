@@ -12,7 +12,7 @@
 | dataset input | `src/dataset.rs` | implemented subset | text/u32 tests | bounded-memory sequential windows; no shuffle/resume yet |
 | `optim.py` AdamW | `src/optimizer.rs` | implemented subset | training/resume smoke | decoupled decay, serializable single-device moments |
 | `checkpoint_manager.py` | `src/checkpoint.rs`, `src/optimizer.rs` | implemented subset | CLI/resume smoke | model and AdamW moments in separate SafeTensors; resume state is single-device |
-| `engine.py` | `src/inference.rs` | implemented subset | generation smoke | byte/BPE generation, top-k/top-p, no KV cache |
+| `engine.py` | `src/inference.rs`, `src/model/cache.rs` | implemented subset | generation/cache parity | byte/BPE generation, top-k/top-p, naive KV cache |
 | `loss_eval.py` | `src/eval.rs` | implemented subset | CLI smoke | validation cross-entropy, no BPB yet |
 | SFT masked loss | `src/loss.rs`, `src/sft.rs` | implemented subset | masking/rendering/CLI smoke tests | JSON and streaming JSONL; no batching yet |
 | benchmark tooling | `bench` CLI subcommand | implemented subset | CLI smoke | measured forward step time and tokens/sec |

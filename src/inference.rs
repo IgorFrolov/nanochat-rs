@@ -1,5 +1,9 @@
 use crate::bpe::BpeTokenizer;
-use crate::{model::Gpt, sampling::next_token, tokenizer::Tokenizer};
+use crate::{
+    model::{cache::KvCache, Gpt},
+    sampling::next_token,
+    tokenizer::Tokenizer,
+};
 use anyhow::Result;
 use candle_core::{DType, Device, IndexOp, Tensor};
 use rand::{rngs::StdRng, SeedableRng};
@@ -27,12 +31,22 @@ impl<'a> BpeInferenceEngine<'a> {
         let mut ids = vec![self.tokenizer.special_id("<|bos|>")?];
         ids.extend(self.tokenizer.encode(prompt));
         let mut rng = StdRng::seed_from_u64(seed);
+        let mut cache = KvCache::new(self.model.config.depth);
         for _ in 0..max_new {
-            let input = Tensor::from_vec(ids.clone(), (1, ids.len()), self.device)?;
+            let input_ids = if cache.position == 0 {
+                ids.clone()
+            } else {
+                vec![*ids.last().unwrap_or(&0)]
+            };
+            let input = Tensor::from_vec(
+                input_ids,
+                (1, if cache.position == 0 { ids.len() } else { 1 }),
+                self.device,
+            )?;
             let logits = self
                 .model
-                .forward(&input, None)?
-                .i((0, ids.len() - 1))?
+                .forward_with_cache(&input, None, Some(&mut cache))?
+                .i((0, input.dim(1)? - 1))?
                 .to_dtype(DType::F32)?;
             ids.push(next_token(&logits, temperature, top_k, top_p, &mut rng)?);
         }
@@ -51,12 +65,22 @@ impl<'a> InferenceEngine<'a> {
     ) -> Result<String> {
         let mut ids = self.tokenizer.encode_with_bos(prompt);
         let mut rng = StdRng::seed_from_u64(seed);
+        let mut cache = KvCache::new(self.model.config.depth);
         for _ in 0..max_new {
-            let input = Tensor::from_vec(ids.clone(), (1, ids.len()), self.device)?;
+            let input_ids = if cache.position == 0 {
+                ids.clone()
+            } else {
+                vec![*ids.last().unwrap_or(&0)]
+            };
+            let input = Tensor::from_vec(
+                input_ids,
+                (1, if cache.position == 0 { ids.len() } else { 1 }),
+                self.device,
+            )?;
             let logits = self
                 .model
-                .forward(&input, None)?
-                .i((0, ids.len() - 1))?
+                .forward_with_cache(&input, None, Some(&mut cache))?
+                .i((0, input.dim(1)? - 1))?
                 .to_dtype(DType::F32)?;
             let id = next_token(&logits, temperature, top_k, top_p, &mut rng)?;
             ids.push(id);
