@@ -1,0 +1,6 @@
+{
+  "messages": [
+    {"role": "user", "content": "What is Rust?"},
+    {"role": "assistant", "content": "Rust is a systems programming language."}
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "depth": 4,
+  "vocab_size": 266,
+  "context_length": 128,
+  "model_dim": 128,
+  "num_heads": 4,
+  "num_kv_heads": 4,
+  "head_dim": 32,
+  "mlp_dim": 512,
+  "rms_norm_eps": 0.00001
+}

@@ -1,0 +1,25 @@
+# Roadmap
+
+- [x] Phase 0: single Cargo package, config, CLI and CPU/Metal backend selection
+- [x] Phase 1: tiny GPT primitives, loss, deterministic loader and unit tests
+- [x] Phase 2: AdamW training and inspectable model checkpoint
+- [x] Phase 3: development tokenizer and local text input
+- [x] Phase 4: naive inference and CLI chat
+- [x] Phase 4a: logits checkpoint roundtrip, tiny overfit smoke test, top-p sampling
+- [x] Phase 4b: validation loss and measured forward benchmark commands
+- [x] Phase 4c: bounded-memory plain-text and little-endian u32 dataset input
+- [x] Phase 4d: serializable AdamW moments and single-device resume training
+- [x] Phase 4e: assistant-only masked cross-entropy foundation for SFT
+- [x] Phase 4f: typed conversation rendering with upstream special-token layout
+- [x] Phase 4g: single-conversation SFT training command with assistant-only loss
+- [x] Phase 4h: streaming JSONL SFT conversations
+- [x] Phase 5a: standalone Rust byte-level BPE trainer and JSON tokenizer artifact
+- [x] Phase 5b: BPE integration into pretraining, SFT, and checkpoint-backed chat
+- [ ] Phase 5c: upstream-compatible tiktoken/BPE artifact and tokenized streaming dataset
+- [x] Phase 6a: SFT rendering, masked loss, JSON and streaming JSONL training
+- [ ] Phase 6b: batched SFT and system/tool message support
+- [x] Phase 7a: validation cross-entropy and forward benchmark
+- [ ] Phase 7b: bits-per-byte evaluation and upstream evaluation tasks
+- [ ] Phase 8: KV cache and generation parity tests
+- [ ] Phase 9: nanochat advanced features and profiling
+- [ ] Phase 10: optional CUDA/distributed backends
