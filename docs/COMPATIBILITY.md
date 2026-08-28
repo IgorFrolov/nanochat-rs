@@ -11,9 +11,9 @@ reference, not as a binary checkpoint format.
 | Tokenizer | Native byte tokenizer or native byte-level BPE JSON |
 | Upstream tokenizer | Special-token names/order are mirrored; tiktoken/pickle artifacts are not loadable |
 | Pretraining | Causal next-token prediction, AdamW, local text and `.u32` input |
-| SFT | JSON/JSONL conversations, assistant-only loss mask |
+| SFT | JSON/JSONL conversations, right-padded batches, assistant-only loss mask |
 | Tool use | Python/output tokens are reserved but execution is disabled |
-| Inference | Autoregressive generation, greedy/top-k/top-p, naive KV cache |
+| Inference | Autoregressive generation, greedy/top-k/top-p, native KV cache with forward parity test |
 | Distributed training | Not implemented |
 
 Resume selects the checkpoint's saved model configuration. If `bpe-tokenizer.json`

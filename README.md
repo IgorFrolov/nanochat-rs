@@ -14,7 +14,7 @@ The current development milestone contains:
 - byte tokenizer and standalone byte-level BPE tokenizer;
 - bounded-memory plain-text and `.u32` dataset loading;
 - masked assistant-only loss and JSON/JSONL SFT training;
-- CPU/Metal inference, top-k/top-p sampling, naive KV cache, evaluation, and benchmarking.
+- CPU/Metal inference, greedy/top-k/top-p sampling, naive KV cache, evaluation, and benchmarking.
 
 The Rust BPE artifact is deliberately standalone. It is not compatible with the
 upstream Python `tokenizer.pkl`/tiktoken artifact yet.
@@ -59,16 +59,13 @@ The implementation boundary and upstream comparison are documented in
 
 ## Checkpoints
 
-Checkpoints contain `config.json`, `model.safetensors`, `optimizer.safetensors`,
-`tokenizer.json`, and `training_state.json`. BPE pretraining additionally writes
-`bpe-tokenizer.json`. `--resume` restores model weights, AdamW moments, and the
-optimizer step for single-device training. Streaming dataset cursor and RNG state
-are not restored yet.
-Training also writes `optimizer.safetensors`; resume with `--resume <checkpoint>`
-and set `--steps` to the desired total step count.
-Checkpoints produced with `--tokenizer` also include `bpe-tokenizer.json`; `chat`
-detects and uses it automatically. `train --resume` also auto-detects a matching
-BPE artifact; stale artifacts with a different vocabulary are ignored with a warning.
+Each checkpoint contains `config.json`, `model.safetensors`, `optimizer.safetensors`,
+`tokenizer.json`, and `training_state.json`. BPE training additionally writes
+`bpe-tokenizer.json`. `--resume` restores weights, AdamW moments, and optimizer
+step for single-device pretraining; `--steps` is the desired total step count.
+`chat` and `train --resume` auto-detect a matching BPE artifact. A stale BPE
+artifact with a mismatched vocabulary is ignored with a warning. Streaming cursor
+and RNG state are not restored yet.
 
 `--data` enables bounded-memory sequential loading. Regular files are tokenized
 line by line; files ending in `.u32` are read as little-endian `u32` token ids.
@@ -79,6 +76,16 @@ rendering. SFT accepts one JSON conversation or a streaming JSONL file, one
 conversation per line. The special-token names and order follow upstream, while
 Python tool execution is intentionally not enabled.
 `sft --batch-size N` right-pads each batch to its longest rendered conversation;
-padding and user tokens are excluded from the loss.
+padding and user tokens are excluded from the loss. Because padding is on the
+right, causal attention for real tokens never attends to a padded position.
+
+## Current Limits
+
+- The native byte-level BPE JSON artifact is not compatible with upstream
+  `tokenizer.pkl` or tiktoken encodings.
+- Upstream PyTorch checkpoints cannot be loaded.
+- KV cache is correct by parity test but is intentionally simple and not optimized.
+- SFT has no checkpoint resume, packed sequences, system messages, or tool execution.
+- Evaluation reports validation cross-entropy only; BPB and upstream CORE tasks are pending.
 
 [karpathy/nanochat]: https://github.com/karpathy/nanochat
