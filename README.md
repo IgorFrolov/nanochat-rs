@@ -66,7 +66,8 @@ are not restored yet.
 Training also writes `optimizer.safetensors`; resume with `--resume <checkpoint>`
 and set `--steps` to the desired total step count.
 Checkpoints produced with `--tokenizer` also include `bpe-tokenizer.json`; `chat`
-detects and uses it automatically.
+detects and uses it automatically. `train --resume` also auto-detects a matching
+BPE artifact; stale artifacts with a different vocabulary are ignored with a warning.
 
 `--data` enables bounded-memory sequential loading. Regular files are tokenized
 line by line; files ending in `.u32` are read as little-endian `u32` token ids.

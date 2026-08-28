@@ -62,6 +62,10 @@ pub fn train(
         &vars,
         train.steps,
     )?;
+    let bpe_artifact = std::path::Path::new(&train.checkpoint).join("bpe-tokenizer.json");
+    if bpe_artifact.exists() {
+        std::fs::remove_file(bpe_artifact)?;
+    }
     opt.save(std::path::Path::new(&train.checkpoint).join("optimizer.safetensors"))
 }
 
@@ -71,19 +75,33 @@ pub fn train_with_bpe(
     text: &str,
     tokenizer: &crate::bpe::BpeTokenizer,
     device: &Device,
+    resume: Option<&str>,
 ) -> Result<()> {
     let vars = VarMap::new();
     let model = Gpt::new(
         config.clone(),
         VarBuilder::from_varmap(&vars, DType::F32, device).pp("model"),
     )?;
+    if let Some(dir) = resume {
+        checkpoint::load_vars(dir, &mut vars.clone())?;
+    }
     let mut optimizer = AdamWState::new(&vars, train.learning_rate, train.weight_decay)?;
+    let start_step = if let Some(dir) = resume {
+        let step = checkpoint::load_step(dir)?;
+        optimizer.load(
+            std::path::Path::new(dir).join("optimizer.safetensors"),
+            step,
+        )?;
+        step
+    } else {
+        0
+    };
     let mut tokens = Vec::new();
     while tokens.len() < train.sequence_length + 1 {
         tokens.extend(tokenizer.encode(text));
     }
     let mut loader = DataLoader::new(tokens, train.batch_size, train.sequence_length, train.seed)?;
-    for step in 0..train.steps {
+    for step in start_step..train.steps {
         let (x, y) = loader.next(device)?;
         let loss = model.forward(&x, Some(&y))?;
         optimizer.backward_step(&loss)?;
@@ -161,5 +179,9 @@ pub fn train_file(
         &vars,
         train.steps,
     )?;
+    let bpe_artifact = std::path::Path::new(&train.checkpoint).join("bpe-tokenizer.json");
+    if bpe_artifact.exists() {
+        std::fs::remove_file(bpe_artifact)?;
+    }
     opt.save(std::path::Path::new(&train.checkpoint).join("optimizer.safetensors"))
 }

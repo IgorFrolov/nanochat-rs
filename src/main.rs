@@ -184,24 +184,41 @@ fn main() -> Result<()> {
             resume,
         } => {
             let d = resolve_device(&device)?;
-            let tokenizer_vocab = match tokenizer.as_deref() {
-                Some(path) => nanochat_rs::bpe::BpeTokenizer::load(path)?.vocab_size(),
-                None => 266,
+            let explicit_tokenizer = tokenizer.is_some();
+            let mut tokenizer_path = match (tokenizer, resume.as_deref()) {
+                (Some(path), _) => Some(path),
+                (None, Some(dir)) => {
+                    let path = std::path::Path::new(dir).join("bpe-tokenizer.json");
+                    path.exists().then(|| path.to_string_lossy().into_owned())
+                }
+                (None, None) => None,
             };
-            let c = if let Some(resume_dir) = &resume {
+            let c = if let Some(resume_dir) = resume.as_deref() {
                 let resumed = checkpoint::load_config(resume_dir)?;
-                if resumed.vocab_size != tokenizer_vocab {
-                    anyhow::bail!("resume checkpoint vocabulary {} does not match selected tokenizer vocabulary {}", resumed.vocab_size, tokenizer_vocab);
+                if let Some(path) = tokenizer_path.as_deref() {
+                    let bpe = nanochat_rs::bpe::BpeTokenizer::load(path)?;
+                    if resumed.vocab_size != bpe.vocab_size() {
+                        if explicit_tokenizer {
+                            anyhow::bail!("resume checkpoint vocabulary {} does not match BPE tokenizer vocabulary {}", resumed.vocab_size, bpe.vocab_size());
+                        }
+                        eprintln!("warning: ignoring stale bpe-tokenizer.json (vocab {} does not match checkpoint vocab {})", bpe.vocab_size(), resumed.vocab_size);
+                        tokenizer_path = None;
+                    }
                 }
                 resumed
             } else {
+                let tokenizer_vocab = match tokenizer_path.as_deref() {
+                    Some(path) => nanochat_rs::bpe::BpeTokenizer::load(path)?.vocab_size(),
+                    None => 266,
+                };
                 GptConfig::from_depth(depth, tokenizer_vocab, seq_len)
             };
-            let checkpoint = if tokenizer.is_some() && checkpoint == "checkpoints/d4" {
-                "checkpoints/d4-bpe".to_string()
-            } else {
-                checkpoint
-            };
+            let checkpoint =
+                if tokenizer_path.is_some() && checkpoint == "checkpoints/d4" && resume.is_none() {
+                    "checkpoints/d4-bpe".to_string()
+                } else {
+                    checkpoint
+                };
             let t = TrainConfig {
                 steps,
                 sequence_length: seq_len,
@@ -218,9 +235,9 @@ fn main() -> Result<()> {
             );
             if let Some(path) = data {
                 nanochat_rs::trainer::train_file(c, t, &path, &d, resume.as_deref())?;
-            } else if let Some(path) = tokenizer {
+            } else if let Some(path) = tokenizer_path {
                 let bpe = nanochat_rs::bpe::BpeTokenizer::load(&path)?;
-                nanochat_rs::trainer::train_with_bpe(c, t, &text, &bpe, &d)?;
+                nanochat_rs::trainer::train_with_bpe(c, t, &text, &bpe, &d, resume.as_deref())?;
             } else {
                 nanochat_rs::trainer::train(c, t, &text, &d, resume.as_deref())?;
             }

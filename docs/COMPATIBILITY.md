@@ -16,5 +16,9 @@ reference, not as a binary checkpoint format.
 | Inference | Autoregressive generation, greedy/top-k/top-p, naive KV cache |
 | Distributed training | Not implemented |
 
+Resume selects the checkpoint's saved model configuration. If `bpe-tokenizer.json`
+matches its vocabulary it is used automatically; a mismatched artifact is treated as
+stale and ignored. Passing an incompatible tokenizer explicitly is an error.
+
 Compatibility claims should be added only after deterministic numerical fixtures
 are checked against a pinned upstream revision.
