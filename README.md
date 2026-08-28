@@ -28,6 +28,7 @@ cargo run -- eval --checkpoint checkpoints/d4 --steps 10
 cargo run -- bench --depth 4 --seq-len 128 --batch-size 1 --steps 10
 cargo run -- train --data data/train.txt --seq-len 128 --steps 100
 cargo run -- sft --conversation data/example-conversation.json --seq-len 128 --steps 100
+cargo run -- sft --conversation data/example-conversations.jsonl --batch-size 2 --seq-len 128 --steps 100
 cargo run -- tokenizer train --input data/train.txt --output data/tokenizer.json --vocab-size 1024
 cargo run -- train --tokenizer data/tokenizer.json --text "hello rust hello rust" --seq-len 8 --steps 10 --checkpoint checkpoints/d4-bpe
 cargo run -- train --resume checkpoints/d4 --steps 200 --seq-len 128
@@ -77,5 +78,7 @@ The library exposes assistant-only masked cross-entropy and typed conversation
 rendering. SFT accepts one JSON conversation or a streaming JSONL file, one
 conversation per line. The special-token names and order follow upstream, while
 Python tool execution is intentionally not enabled.
+`sft --batch-size N` right-pads each batch to its longest rendered conversation;
+padding and user tokens are excluded from the loss.
 
 [karpathy/nanochat]: https://github.com/karpathy/nanochat

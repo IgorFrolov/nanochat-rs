@@ -33,6 +33,8 @@ enum Command {
         seq_len: usize,
         #[arg(long, default_value_t = 100)]
         steps: usize,
+        #[arg(long, default_value_t = 1)]
+        batch_size: usize,
         #[arg(long, default_value = "cpu")]
         device: String,
         #[arg(long, default_value = "checkpoints/d4")]
@@ -58,6 +60,8 @@ enum Command {
         seq_len: usize,
         #[arg(long, default_value_t = 100)]
         steps: usize,
+        #[arg(long, default_value_t = 1)]
+        batch_size: usize,
         #[arg(long, default_value = "cpu")]
         device: String,
         #[arg(long, default_value = "checkpoints/sft")]
@@ -176,6 +180,7 @@ fn main() -> Result<()> {
             depth,
             seq_len,
             steps,
+            batch_size,
             device,
             checkpoint,
             tokenizer,
@@ -221,6 +226,7 @@ fn main() -> Result<()> {
                 };
             let t = TrainConfig {
                 steps,
+                batch_size,
                 sequence_length: seq_len,
                 checkpoint,
                 ..Default::default()
@@ -247,6 +253,7 @@ fn main() -> Result<()> {
             depth,
             seq_len,
             steps,
+            batch_size,
             device,
             checkpoint,
             tokenizer,
@@ -259,6 +266,7 @@ fn main() -> Result<()> {
             let c = GptConfig::from_depth(depth, vocab_size, seq_len);
             let t = TrainConfig {
                 steps,
+                batch_size,
                 sequence_length: seq_len,
                 checkpoint,
                 ..Default::default()

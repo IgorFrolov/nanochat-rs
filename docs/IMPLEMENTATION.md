@@ -14,7 +14,7 @@
 | `checkpoint_manager.py` | `src/checkpoint.rs`, `src/optimizer.rs` | implemented subset | CLI/resume smoke | model and AdamW moments in separate SafeTensors; resume state is single-device |
 | `engine.py` | `src/inference.rs`, `src/model/cache.rs` | implemented subset | generation/cache parity | byte/BPE generation, top-k/top-p, naive KV cache |
 | `loss_eval.py` | `src/eval.rs` | implemented subset | CLI smoke | validation cross-entropy, no BPB yet |
-| SFT masked loss | `src/loss.rs`, `src/sft.rs` | implemented subset | masking/rendering/CLI smoke tests | JSON and streaming JSONL; no batching yet |
+| SFT masked loss | `src/loss.rs`, `src/sft.rs` | implemented subset | masking/rendering/batch/CLI smoke tests | JSON and streaming JSONL; right-padded batches; no packed attention mask |
 | benchmark tooling | `bench` CLI subcommand | implemented subset | CLI smoke | measured forward step time and tokens/sec |
 | SFT / RL / CORE eval | future modules | planned | - | not implemented |
 | Muon | future optimizer module | planned | - | not implemented |

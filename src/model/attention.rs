@@ -116,6 +116,8 @@ impl Attention {
         } else {
             (k, v, 0)
         };
+        // Candle's batched matmul requires a contiguous value operand after head transpose.
+        let v = v.contiguous()?;
         let scale = (self.head_dim as f64).sqrt();
         let mut scores = q.matmul(&k.transpose(2, 3)?)?.affine(1. / scale, 0.)?;
         let key_len = k.dim(2)?;

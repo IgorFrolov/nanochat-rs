@@ -4,6 +4,7 @@ use candle_nn::{AdamW, Optimizer, ParamsAdamW, VarBuilder, VarMap};
 use nanochat_rs::bpe::BpeTokenizer;
 use nanochat_rs::dataset::StreamingDataset;
 use nanochat_rs::loss::masked_cross_entropy;
+use nanochat_rs::sft::batch_rendered;
 use nanochat_rs::{
     checkpoint,
     model::{cache::KvCache, Gpt},
@@ -49,6 +50,48 @@ fn conversation_masks_only_assistant_content() -> anyhow::Result<()> {
     assert!(rendered.loss_mask[start + 1..start + 6]
         .iter()
         .all(|value| *value));
+    Ok(())
+}
+
+#[test]
+fn sft_batch_right_pads_and_masks_padding() -> anyhow::Result<()> {
+    let tokenizer = Tokenizer::default();
+    let short = tokenizer.render_conversation(
+        &Conversation {
+            messages: vec![
+                Message {
+                    role: "user".into(),
+                    content: "a".into(),
+                },
+                Message {
+                    role: "assistant".into(),
+                    content: "b".into(),
+                },
+            ],
+        },
+        100,
+    )?;
+    let long = tokenizer.render_conversation(
+        &Conversation {
+            messages: vec![
+                Message {
+                    role: "user".into(),
+                    content: "longer".into(),
+                },
+                Message {
+                    role: "assistant".into(),
+                    content: "reply".into(),
+                },
+            ],
+        },
+        100,
+    )?;
+    let batch = batch_rendered(&[short.clone(), long.clone()], tokenizer.bos_id)?;
+    assert_eq!(batch.loss_mask.len(), batch.sequence_length * 2);
+    let short_length = short.ids.len() - 1;
+    assert!(batch.loss_mask[short_length..batch.sequence_length]
+        .iter()
+        .all(|value| *value == 0));
     Ok(())
 }
 

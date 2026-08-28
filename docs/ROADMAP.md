@@ -17,7 +17,8 @@
 - [x] Phase 5b: BPE integration into pretraining, SFT, and checkpoint-backed chat
 - [ ] Phase 5c: upstream-compatible tiktoken/BPE artifact and tokenized streaming dataset
 - [x] Phase 6a: SFT rendering, masked loss, JSON and streaming JSONL training
-- [ ] Phase 6b: batched SFT and system/tool message support
+- [x] Phase 6b: batched SFT with right padding and masked loss
+- [ ] Phase 6c: system/tool message support and packed attention masks
 - [x] Phase 7a: validation cross-entropy and forward benchmark
 - [ ] Phase 7b: bits-per-byte evaluation and upstream evaluation tasks
 - [x] Phase 8: KV cache and generation parity tests
