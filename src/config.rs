@@ -95,3 +95,21 @@ impl Default for TrainConfig {
         }
     }
 }
+
+impl TrainConfig {
+    pub fn validate(&self, model: &GptConfig, start_step: usize) -> anyhow::Result<()> {
+        model.validate()?;
+        anyhow::ensure!(self.batch_size > 0, "batch size must be nonzero");
+        anyhow::ensure!(
+            self.sequence_length > 0 && self.sequence_length <= model.context_length,
+            "sequence length must be within model context (1..={})",
+            model.context_length
+        );
+        anyhow::ensure!(
+            self.steps >= start_step,
+            "target steps {} is less than checkpoint step {start_step}",
+            self.steps
+        );
+        Ok(())
+    }
+}

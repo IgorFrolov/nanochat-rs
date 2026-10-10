@@ -1,4 +1,4 @@
-use crate::tokenizer::Tokenizer;
+use crate::tokenizer::{ModelTokenizer, Tokenizer};
 use anyhow::{Context, Result};
 use std::{
     fs::File,
@@ -12,7 +12,7 @@ pub struct StreamingDataset {
     reader: BufReader<File>,
     path: PathBuf,
     kind: DatasetKind,
-    tokenizer: Tokenizer,
+    tokenizer: ModelTokenizer,
     pending: Vec<u32>,
 }
 
@@ -23,6 +23,10 @@ enum DatasetKind {
 
 impl StreamingDataset {
     pub fn open(path: impl AsRef<Path>, tokenizer: Tokenizer) -> Result<Self> {
+        Self::open_with_tokenizer(path, ModelTokenizer::Byte(tokenizer))
+    }
+
+    pub fn open_with_tokenizer(path: impl AsRef<Path>, tokenizer: ModelTokenizer) -> Result<Self> {
         let path = path.as_ref();
         let file =
             File::open(path).with_context(|| format!("opening dataset {}", path.display()))?;
@@ -50,22 +54,20 @@ impl StreamingDataset {
                 self.pending.extend(self.tokenizer.encode(&line));
             }
             DatasetKind::U32 => {
-                let mut bytes = [0u8; 4];
-                if self.reader.read(&mut bytes[..1])? == 0 {
-                    return Ok(false);
-                }
-                self.reader
-                    .read_exact(&mut bytes[1..])
-                    .context("u32 dataset ended with a partial token")?;
-                for _ in 0..1023 {
-                    let id = u32::from_le_bytes(bytes);
-                    self.pending.push(self.tokenizer.encode_id(id)?);
+                for index in 0..1024 {
+                    let mut bytes = [0u8; 4];
                     if self.reader.read(&mut bytes[..1])? == 0 {
-                        break;
+                        return Ok(index > 0);
                     }
                     self.reader
                         .read_exact(&mut bytes[1..])
                         .context("u32 dataset ended with a partial token")?;
+                    let id = u32::from_le_bytes(bytes);
+                    anyhow::ensure!(
+                        (id as usize) < self.tokenizer.vocab_size(),
+                        "token id {id} exceeds vocabulary"
+                    );
+                    self.pending.push(id);
                 }
             }
         }
@@ -73,6 +75,7 @@ impl StreamingDataset {
     }
 
     pub fn next_window(&mut self, sequence_length: usize) -> Result<Option<(Vec<u32>, Vec<u32>)>> {
+        anyhow::ensure!(sequence_length > 0, "sequence length must be nonzero");
         while self.pending.len() < sequence_length + 1 {
             if !self.fill()? {
                 self.reader = BufReader::new(File::open(&self.path)?);

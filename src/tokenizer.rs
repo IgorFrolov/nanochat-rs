@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Tokenizer {
     pub bos_id: u32,
     pub eos_id: u32,
@@ -116,5 +116,88 @@ impl Tokenizer {
         } else {
             bail!("token id {id} exceeds vocabulary {}", self.vocab_size)
         }
+    }
+}
+
+/// The tokenizer paired with a model, shared by all training and inference paths.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ModelTokenizer {
+    Byte(Tokenizer),
+    Bpe(crate::bpe::BpeTokenizer),
+}
+
+impl Default for ModelTokenizer {
+    fn default() -> Self {
+        Self::Byte(Tokenizer::default())
+    }
+}
+
+impl ModelTokenizer {
+    pub fn from_path(path: Option<&str>) -> Result<Self> {
+        match path {
+            Some(path) => Ok(Self::Bpe(crate::bpe::BpeTokenizer::load(path)?)),
+            None => Ok(Self::default()),
+        }
+    }
+    pub fn vocab_size(&self) -> usize {
+        match self {
+            Self::Byte(t) => t.vocab_size,
+            Self::Bpe(t) => t.vocab_size(),
+        }
+    }
+    pub fn encode(&self, text: &str) -> Vec<u32> {
+        match self {
+            Self::Byte(t) => t.encode(text),
+            Self::Bpe(t) => t.encode(text),
+        }
+    }
+    pub fn decode(&self, ids: &[u32]) -> String {
+        match self {
+            Self::Byte(t) => t.decode(ids),
+            Self::Bpe(t) => t.decode(ids),
+        }
+    }
+    pub fn special_id(&self, name: &str) -> Result<u32> {
+        match self {
+            Self::Byte(t) => t.special_id(name),
+            Self::Bpe(t) => t.special_id(name),
+        }
+    }
+    pub fn render_conversation(
+        &self,
+        conversation: &Conversation,
+        max: usize,
+    ) -> Result<RenderedConversation> {
+        match self {
+            Self::Byte(t) => t.render_conversation(conversation, max),
+            Self::Bpe(t) => t.render_conversation(conversation, max),
+        }
+    }
+    pub fn validate_vocab(&self, vocab: usize) -> Result<()> {
+        anyhow::ensure!(
+            self.vocab_size() == vocab,
+            "tokenizer vocabulary {} does not match model vocabulary {vocab}",
+            self.vocab_size()
+        );
+        Ok(())
+    }
+    pub fn stop_ids(&self) -> Result<Vec<u32>> {
+        let mut ids = vec![self.special_id("<|assistant_end|>")?];
+        if let Self::Byte(t) = self {
+            ids.push(t.eos_id);
+        }
+        Ok(ids)
+    }
+    pub fn conversation_prompt(&self, conversation: &Conversation) -> Result<Vec<u32>> {
+        anyhow::ensure!(
+            conversation
+                .messages
+                .last()
+                .is_some_and(|m| m.role == "user"),
+            "generation needs a final user message"
+        );
+        let mut ids = self.render_conversation(conversation, usize::MAX)?.ids;
+        ids.push(self.special_id("<|assistant_start|>")?);
+        Ok(ids)
     }
 }

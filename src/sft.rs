@@ -4,7 +4,7 @@ use crate::{
     loss::masked_cross_entropy,
     model::Gpt,
     optimizer::AdamWState,
-    tokenizer::{Conversation, RenderedConversation, Tokenizer},
+    tokenizer::{Conversation, RenderedConversation},
 };
 use anyhow::{Context, Result};
 use candle_core::{DType, Device, Tensor};
@@ -24,7 +24,11 @@ pub fn batch_rendered(examples: &[RenderedConversation], pad_id: u32) -> Result<
         .map(|example| example.ids.len().saturating_sub(1))
         .max()
         .context("SFT batch is empty")?;
-    if sequence_length == 0 {
+    if sequence_length == 0
+        || examples
+            .iter()
+            .any(|e| e.ids.len() < 2 || e.ids.len() != e.loss_mask.len())
+    {
         anyhow::bail!("SFT examples must contain at least two tokens")
     }
     let mut inputs = Vec::with_capacity(examples.len() * sequence_length);
@@ -54,10 +58,27 @@ pub fn train(
     tokenizer_path: Option<&str>,
     device: &Device,
 ) -> Result<()> {
-    let tokenizer = Tokenizer::default();
-    let bpe = tokenizer_path
-        .map(crate::bpe::BpeTokenizer::load)
-        .transpose()?;
+    train_from_checkpoint(
+        config,
+        train,
+        conversation_path,
+        tokenizer_path,
+        device,
+        None,
+    )
+}
+
+pub fn train_from_checkpoint(
+    config: GptConfig,
+    train: TrainConfig,
+    conversation_path: &str,
+    tokenizer_path: Option<&str>,
+    device: &Device,
+    init_from: Option<&str>,
+) -> Result<()> {
+    train.validate(&config, 0)?;
+    let tokenizer = checkpoint::select_tokenizer(init_from, tokenizer_path)?;
+    tokenizer.validate_vocab(config.vocab_size)?;
     let is_jsonl = std::path::Path::new(conversation_path)
         .extension()
         .and_then(|x| x.to_str())
@@ -69,18 +90,16 @@ pub fn train(
             &std::fs::read(conversation_path)
                 .with_context(|| format!("reading conversation {conversation_path}"))?,
         )?;
-        Some(match &bpe {
-            Some(tokenizer) => {
-                tokenizer.render_conversation(&conversation, config.context_length + 1)?
-            }
-            None => tokenizer.render_conversation(&conversation, config.context_length + 1)?,
-        })
+        Some(tokenizer.render_conversation(&conversation, train.sequence_length + 1)?)
     };
-    let vars = VarMap::new();
+    let mut vars = VarMap::new();
     let model = Gpt::new(
         config.clone(),
         VarBuilder::from_varmap(&vars, DType::F32, device).pp("model"),
     )?;
+    if let Some(dir) = init_from {
+        checkpoint::load_vars(dir, &mut vars)?;
+    }
     let mut optimizer = AdamWState::new(&vars, train.learning_rate, train.weight_decay)?;
     let mut reader = if is_jsonl {
         Some(std::io::BufReader::new(std::fs::File::open(
@@ -92,34 +111,25 @@ pub fn train(
     for step in 0..train.steps {
         let mut examples = Vec::with_capacity(train.batch_size);
         for _ in 0..train.batch_size {
-            let rendered =
-                if let Some(single) = &single {
-                    single.clone()
-                } else {
-                    let reader = reader.as_mut().context("missing SFT JSONL reader")?;
-                    let mut line = String::new();
-                    if reader.read_line(&mut line)? == 0 {
-                        *reader = std::io::BufReader::new(std::fs::File::open(conversation_path)?);
-                        reader.read_line(&mut line)?;
-                    }
-                    let conversation: Conversation = serde_json::from_str(line.trim())
-                        .context("parsing SFT JSONL conversation")?;
-                    match &bpe {
-                        Some(tokenizer) => tokenizer
-                            .render_conversation(&conversation, config.context_length + 1)?,
-                        None => tokenizer
-                            .render_conversation(&conversation, config.context_length + 1)?,
-                    }
-                };
+            let rendered = if let Some(single) = &single {
+                single.clone()
+            } else {
+                let reader = reader.as_mut().context("missing SFT JSONL reader")?;
+                let mut line = String::new();
+                if reader.read_line(&mut line)? == 0 {
+                    *reader = std::io::BufReader::new(std::fs::File::open(conversation_path)?);
+                    reader.read_line(&mut line)?;
+                }
+                let conversation: Conversation =
+                    serde_json::from_str(line.trim()).context("parsing SFT JSONL conversation")?;
+                tokenizer.render_conversation(&conversation, train.sequence_length + 1)?
+            };
             if rendered.ids.len() < 2 || !rendered.loss_mask[1..].iter().any(|value| *value) {
                 anyhow::bail!("conversation has no supervised assistant tokens within context")
             }
             examples.push(rendered);
         }
-        let pad_id = match &bpe {
-            Some(tokenizer) => tokenizer.special_id("<|bos|>")?,
-            None => tokenizer.bos_id,
-        };
+        let pad_id = tokenizer.special_id("<|bos|>")?;
         let batch = batch_rendered(&examples, pad_id)?;
         let input_ids = Tensor::from_vec(
             batch.input_ids,
@@ -148,12 +158,6 @@ pub fn train(
             );
         }
     }
-    checkpoint::save(
-        &train.checkpoint,
-        &config,
-        &Tokenizer::default(),
-        &vars,
-        train.steps,
-    )?;
+    checkpoint::save_with_tokenizer(&train.checkpoint, &config, &tokenizer, &vars, train.steps)?;
     optimizer.save(std::path::Path::new(&train.checkpoint).join("optimizer.safetensors"))
 }

@@ -7,9 +7,9 @@ use nanochat_rs::{
     bpe::BpeTokenizer,
     checkpoint,
     config::{DeviceKind, GptConfig, TrainConfig},
-    inference::InferenceEngine,
+    inference::{generate_tokens, GenerationOptions},
     model::Gpt,
-    tokenizer::Tokenizer,
+    tokenizer::{Conversation, Message, ModelTokenizer, Tokenizer},
 };
 #[derive(Parser)]
 struct Cli {
@@ -68,6 +68,9 @@ enum Command {
         checkpoint: String,
         #[arg(long)]
         tokenizer: Option<String>,
+        /// Initialize from pretrained weights with a fresh optimizer.
+        #[arg(long)]
+        init_from: Option<String>,
     },
     Chat {
         #[arg(long)]
@@ -78,6 +81,9 @@ enum Command {
         temperature: f64,
         #[arg(long, default_value_t = 0.9)]
         top_p: f64,
+        /// Render user/assistant roles and retain conversation history.
+        #[arg(long)]
+        conversation: bool,
     },
     Eval {
         #[arg(long)]
@@ -189,41 +195,20 @@ fn main() -> Result<()> {
             resume,
         } => {
             let d = resolve_device(&device)?;
-            let explicit_tokenizer = tokenizer.is_some();
-            let mut tokenizer_path = match (tokenizer, resume.as_deref()) {
-                (Some(path), _) => Some(path),
-                (None, Some(dir)) => {
-                    let path = std::path::Path::new(dir).join("bpe-tokenizer.json");
-                    path.exists().then(|| path.to_string_lossy().into_owned())
-                }
-                (None, None) => None,
-            };
-            let c = if let Some(resume_dir) = resume.as_deref() {
-                let resumed = checkpoint::load_config(resume_dir)?;
-                if let Some(path) = tokenizer_path.as_deref() {
-                    let bpe = nanochat_rs::bpe::BpeTokenizer::load(path)?;
-                    if resumed.vocab_size != bpe.vocab_size() {
-                        if explicit_tokenizer {
-                            anyhow::bail!("resume checkpoint vocabulary {} does not match BPE tokenizer vocabulary {}", resumed.vocab_size, bpe.vocab_size());
-                        }
-                        eprintln!("warning: ignoring stale bpe-tokenizer.json (vocab {} does not match checkpoint vocab {})", bpe.vocab_size(), resumed.vocab_size);
-                        tokenizer_path = None;
-                    }
-                }
-                resumed
+            let selected = checkpoint::select_tokenizer(resume.as_deref(), tokenizer.as_deref())?;
+            let c = if let Some(dir) = resume.as_deref() {
+                checkpoint::load_config(dir)?
             } else {
-                let tokenizer_vocab = match tokenizer_path.as_deref() {
-                    Some(path) => nanochat_rs::bpe::BpeTokenizer::load(path)?.vocab_size(),
-                    None => 266,
-                };
-                GptConfig::from_depth(depth, tokenizer_vocab, seq_len)
+                GptConfig::from_depth(depth, selected.vocab_size(), seq_len)
             };
-            let checkpoint =
-                if tokenizer_path.is_some() && checkpoint == "checkpoints/d4" && resume.is_none() {
-                    "checkpoints/d4-bpe".to_string()
-                } else {
-                    checkpoint
-                };
+            let checkpoint = if matches!(&selected, ModelTokenizer::Bpe(_))
+                && checkpoint == "checkpoints/d4"
+                && resume.is_none()
+            {
+                "checkpoints/d4-bpe".to_string()
+            } else {
+                checkpoint
+            };
             let t = TrainConfig {
                 steps,
                 batch_size,
@@ -239,14 +224,17 @@ fn main() -> Result<()> {
                     "Metal/MPS"
                 }
             );
-            if let Some(path) = data {
-                nanochat_rs::trainer::train_file(c, t, &path, &d, resume.as_deref())?;
-            } else if let Some(path) = tokenizer_path {
-                let bpe = nanochat_rs::bpe::BpeTokenizer::load(&path)?;
-                nanochat_rs::trainer::train_with_bpe(c, t, &text, &bpe, &d, resume.as_deref())?;
-            } else {
-                nanochat_rs::trainer::train(c, t, &text, &d, resume.as_deref())?;
-            }
+            let is_file = data.is_some();
+            let source = data.as_deref().unwrap_or(&text);
+            nanochat_rs::trainer::train_source(
+                c,
+                t,
+                source,
+                is_file,
+                selected,
+                &d,
+                resume.as_deref(),
+            )?;
         }
         Command::Sft {
             conversation,
@@ -257,13 +245,16 @@ fn main() -> Result<()> {
             device,
             checkpoint,
             tokenizer,
+            init_from,
         } => {
             let d = resolve_device(&device)?;
-            let vocab_size = match tokenizer.as_deref() {
-                Some(path) => nanochat_rs::bpe::BpeTokenizer::load(path)?.vocab_size(),
-                None => 266,
+            let selected =
+                checkpoint::select_tokenizer(init_from.as_deref(), tokenizer.as_deref())?;
+            let c = if let Some(dir) = init_from.as_deref() {
+                checkpoint::load_config(dir)?
+            } else {
+                GptConfig::from_depth(depth, selected.vocab_size(), seq_len)
             };
-            let c = GptConfig::from_depth(depth, vocab_size, seq_len);
             let t = TrainConfig {
                 steps,
                 batch_size,
@@ -279,27 +270,27 @@ fn main() -> Result<()> {
                     "Metal/MPS"
                 }
             );
-            nanochat_rs::sft::train(c, t, &conversation, tokenizer.as_deref(), &d)?;
+            nanochat_rs::sft::train_from_checkpoint(
+                c,
+                t,
+                &conversation,
+                tokenizer.as_deref(),
+                &d,
+                init_from.as_deref(),
+            )?;
         }
         Command::Chat {
             checkpoint: dir,
             max_new_tokens,
             temperature,
             top_p,
+            conversation,
         } => {
             let d = Device::Cpu;
-            let c = checkpoint::load_config(&dir)?;
-            let vars = VarMap::new();
-            let vb = VarBuilder::from_varmap(&vars, DType::F32, &d).pp("model");
-            let model = Gpt::new(c, vb)?;
-            let mut vars = vars;
-            checkpoint::load_vars(&dir, &mut vars)?;
-            let tok = Tokenizer::default();
-            let bpe_path = std::path::Path::new(&dir).join("bpe-tokenizer.json");
-            let bpe = if bpe_path.exists() {
-                Some(nanochat_rs::bpe::BpeTokenizer::load(bpe_path)?)
-            } else {
-                None
+            let (model, _vars, _) = nanochat_rs::eval::load_model(&dir, &d)?;
+            let tokenizer = checkpoint::load_tokenizer(&dir)?;
+            let mut history = Conversation {
+                messages: Vec::new(),
             };
             println!("nanochat-rs chat (Ctrl-D to exit)");
             use std::io::{self, Write};
@@ -310,35 +301,37 @@ fn main() -> Result<()> {
                 if io::stdin().read_line(&mut p)? == 0 {
                     break;
                 }
-                let response = if let Some(bpe) = &bpe {
-                    nanochat_rs::inference::BpeInferenceEngine {
-                        model: &model,
-                        tokenizer: bpe,
-                        device: &d,
-                    }
-                    .generate(
-                        p.trim(),
-                        max_new_tokens,
-                        temperature,
-                        50,
-                        top_p,
-                        42,
-                    )?
+                let prompt = if conversation {
+                    history.messages.push(Message {
+                        role: "user".into(),
+                        content: p.trim().into(),
+                    });
+                    tokenizer.conversation_prompt(&history)?
                 } else {
-                    InferenceEngine {
-                        model: &model,
-                        tokenizer: &tok,
-                        device: &d,
-                    }
-                    .generate(
-                        p.trim(),
+                    let mut ids = vec![tokenizer.special_id("<|bos|>")?];
+                    ids.extend(tokenizer.encode(p.trim()));
+                    ids
+                };
+                let generated = generate_tokens(
+                    &model,
+                    &tokenizer,
+                    &d,
+                    &prompt,
+                    GenerationOptions {
                         max_new_tokens,
                         temperature,
-                        50,
+                        top_k: 50,
                         top_p,
-                        42,
-                    )?
-                };
+                        seed: 42,
+                    },
+                )?;
+                let response = tokenizer.decode(&generated);
+                if conversation {
+                    history.messages.push(Message {
+                        role: "assistant".into(),
+                        content: response.clone(),
+                    });
+                }
                 println!("assistant> {response}");
             }
         }

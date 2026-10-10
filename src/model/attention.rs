@@ -126,7 +126,8 @@ impl Attention {
                 (0..key_len).map(move |col| if col <= start + row { 0.0 } else { -1e9 })
             })
             .collect();
-        let mask = Tensor::from_vec(mask_data, (t, t), x.device())?.to_dtype(scores.dtype())?;
+        let mask =
+            Tensor::from_vec(mask_data, (t, key_len), x.device())?.to_dtype(scores.dtype())?;
         scores = scores.broadcast_add(&mask.unsqueeze(0)?.unsqueeze(0)?)?;
         let y = candle_nn::ops::softmax(&scores, D::Minus1)?
             .matmul(&v)?

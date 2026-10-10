@@ -46,6 +46,21 @@ impl Gpt {
         targets: Option<&Tensor>,
         mut cache: Option<&mut KvCache>,
     ) -> Result<Tensor> {
+        let (_, length) = ids.dims2()?;
+        let position = cache.as_ref().map_or(0, |c| c.position);
+        anyhow::ensure!(
+            length > 0
+                && position
+                    .checked_add(length)
+                    .is_some_and(|n| n <= self.config.context_length),
+            "input exceeds model context or is empty"
+        );
+        if let Some(c) = cache.as_ref() {
+            anyhow::ensure!(
+                c.keys.len() == self.config.depth && c.values.len() == self.config.depth,
+                "cache layer count does not match model"
+            );
+        }
         let mut x = self.tok_emb.forward(ids)?;
         x = rms_norm(&x, self.norm_eps)?;
         for (blocks_index, block) in self.blocks.iter().enumerate() {

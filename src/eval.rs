@@ -1,6 +1,4 @@
-use crate::{
-    checkpoint, config::GptConfig, dataloader::DataLoader, model::Gpt, tokenizer::Tokenizer,
-};
+use crate::{checkpoint, config::GptConfig, dataloader::DataLoader, model::Gpt};
 use anyhow::Result;
 use candle_core::{DType, Device};
 use candle_nn::{VarBuilder, VarMap};
@@ -19,10 +17,12 @@ pub fn load_model(dir: &str, device: &Device) -> Result<(Gpt, VarMap, GptConfig)
 
 pub fn validation_loss(dir: &str, text: &str, steps: usize, device: &Device) -> Result<f32> {
     let (model, _vars, config) = load_model(dir, device)?;
-    let tokenizer = Tokenizer::default();
+    let tokenizer = checkpoint::load_tokenizer(dir)?;
+    let encoded = tokenizer.encode(text);
+    anyhow::ensure!(!encoded.is_empty(), "evaluation text must not be empty");
     let mut tokens = Vec::new();
     while tokens.len() < config.context_length + 1 {
-        tokens.extend(tokenizer.encode(text));
+        tokens.extend_from_slice(&encoded);
     }
     let mut loader = DataLoader::new(tokens, 1, config.context_length, 42)?;
     let mut total = 0.0;

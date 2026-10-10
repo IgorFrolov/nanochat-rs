@@ -18,6 +18,10 @@ pub fn masked_cross_entropy(logits: &Tensor, targets: &Tensor, mask: &Tensor) ->
         .neg()?;
     let weights = mask.flatten_all()?.to_dtype(DType::F32)?;
     let total = weights.sum_all()?;
+    anyhow::ensure!(
+        total.to_scalar::<f32>()? > 0.0,
+        "loss mask has no supervised tokens"
+    );
     Ok((selected.broadcast_mul(&weights)?)
         .sum_all()?
         .broadcast_div(&total)?)

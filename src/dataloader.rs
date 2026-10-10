@@ -12,7 +12,7 @@ pub struct DataLoader {
 }
 impl DataLoader {
     pub fn new(tokens: Vec<u32>, batch_size: usize, seq_len: usize, seed: u64) -> Result<Self> {
-        if tokens.len() < seq_len + 1 || batch_size == 0 {
+        if seq_len == 0 || tokens.len() < seq_len + 1 || batch_size == 0 {
             bail!("dataset needs at least seq_len+1 tokens and nonzero batch size")
         }
         let mut order: Vec<_> = (0..tokens.len() - seq_len).collect();
