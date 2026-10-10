@@ -8,6 +8,7 @@ pub mod inference;
 pub mod loss;
 pub mod model;
 pub mod optimizer;
+pub mod resume;
 pub mod sampling;
 pub mod sft;
 pub mod tokenizer;

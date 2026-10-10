@@ -10,7 +10,7 @@ The current development milestone contains:
 
 - RMSNorm decoder Transformer with RoPE, QK normalization, causal attention, GQA-ready projections, and `ReLU^2` MLP;
 - AdamW training with inspectable model and optimizer SafeTensors;
-- single-device checkpoint resume;
+- single-device pretraining/SFT resume with data cursors and shuffle RNG state;
 - byte tokenizer and standalone byte-level BPE tokenizer;
 - bounded-memory plain-text and `.u32` dataset loading;
 - masked assistant-only loss and JSON/JSONL SFT training;
@@ -67,10 +67,11 @@ The implementation boundary and upstream comparison are documented in
 - `src/tokenizer.rs`, `src/bpe.rs`: byte and BPE tokenizers, conversation rendering.
 - `src/dataloader.rs`, `src/dataset.rs`: in-memory and streaming data loaders.
 - `src/trainer.rs`, `src/sft.rs`, `src/loss.rs`: pretraining and supervised training.
-- `src/optimizer.rs`, `src/checkpoint.rs`: AdamW and checkpoint persistence.
+- `src/optimizer.rs`, `src/checkpoint.rs`, `src/resume.rs`: AdamW, atomic checkpoint
+  publication, and versioned training/data state.
 - `src/inference.rs`, `src/sampling.rs`, `src/eval.rs`: generation and evaluation.
-- `tests/components.rs`, `tests/regressions.rs`: component, numerical parity,
-  dataset boundary, optimizer resume, and CLI workflow tests.
+- `tests/components.rs`, `tests/regressions.rs`, `tests/reliability.rs`: component,
+  numerical parity, exact resume, publication failure, process interruption, and CLI tests.
 - `data/`: small example corpora and conversations.
 - `configs/`: reference model JSON files; the CLI has no `--config` option.
 
@@ -91,11 +92,21 @@ Contributor instructions are in [AGENTS.md](AGENTS.md).
 
 ## Checkpoints
 
-Each training checkpoint contains `config.json`, `model.safetensors`,
+Training writes immutable generations under `CHECKPOINT/snapshots/<generation>/`
+and atomically replaces the small `CHECKPOINT/CURRENT` pointer only after all
+files have been written and synced. Each generation contains `config.json`, `model.safetensors`,
 `optimizer.safetensors`, `tokenizer.json`, and `training_state.json`. All BPE
 training paths, including SFT and file training, also save `bpe-tokenizer.json`.
 New `tokenizer.json` metadata identifies the tokenizer with `kind: byte|bpe`.
-Byte checkpoints remove any old BPE artifact when saved.
+Byte generations do not contain a BPE artifact. CLI commands accept the checkpoint
+root or a specific generation directory; library readers can use
+`checkpoint::resolve` to pin a generation before reading several files.
+
+Previous generations are retained so active readers and interrupted saves remain
+safe. Disk usage grows with each save; automatic retention/garbage collection is
+not implemented. Never delete a generation still referenced by `CURRENT` or an
+active reader. Concurrent writers publish complete generations, with the last
+publication winning; use a separate output directory for each training run.
 
 Resume, SFT initialization, chat, and eval load the same checkpoint tokenizer.
 Missing required BPE artifacts and vocabulary mismatches are errors. An explicit
@@ -106,13 +117,39 @@ vocabulary size. Legacy BPE-SFT checkpoints that omitted that artifact must be
 repaired with their original tokenizer; its identity cannot always be inferred
 from vocabulary size alone.
 
-`train --resume` restores weights, AdamW moments, and optimizer step;
-`--steps` is the desired total step count and cannot be less than the saved step.
-Streaming cursor and RNG state are not restored, so this is not exact replay of
-an uninterrupted data sequence. Resume uses the saved model configuration, while
-`--seq-len` controls training windows and must fit the saved context length.
-Set `--checkpoint` explicitly to choose the output directory; it does not default
-to the resume path.
+`train --resume` and `sft --resume` restore weights, AdamW moments/settings/step,
+and data progress. Inline pretraining restores the shuffled window order, cursor,
+and ChaCha12 RNG. File pretraining restores the byte offset plus pending tokens;
+JSONL SFT restores its next-line offset. The model currently has no stochastic
+training layers, so the data shuffler is the only RNG consumed after initialization.
+
+`--steps` is the desired total count and cannot decrease. On resume, omitted
+`--batch-size` and `--seq-len` inherit saved values; explicitly changing them is
+rejected. Supply the original `--text`, `--data`, or `--conversation` again.
+A streaming SHA-256 check rejects changed data content or format; files may be
+moved without invalidating resume. Data files must remain unchanged during a run:
+their hash is rechecked before each save, which adds a full sequential read.
+The saved backend is required; CPU exactness is tested, while bitwise equivalence
+across hardware, dependency versions, or Metal executions is not promised.
+
+Use `--checkpoint-every N` for periodic recovery points. The default `0` saves only
+at completion. A killed process can lose updates since the latest published
+checkpoint. Set `--checkpoint` explicitly for the output directory; it does not
+default to the resume path.
+
+```sh
+cargo run -- train --data data/train.txt --seq-len 128 --steps 100 --checkpoint-every 20 --checkpoint checkpoints/pretrain
+cargo run -- train --resume checkpoints/pretrain --data data/train.txt --steps 200 --checkpoint-every 20 --checkpoint checkpoints/pretrain
+cargo run -- sft --init-from checkpoints/pretrain --conversation data/example-conversations.jsonl --seq-len 128 --batch-size 2 --steps 100 --checkpoint-every 20 --checkpoint checkpoints/sft
+cargo run -- sft --resume checkpoints/sft --conversation data/example-conversations.jsonl --steps 200 --checkpoint-every 20 --checkpoint checkpoints/sft
+```
+
+Legacy flat checkpoint directories remain readable. Pretraining resume from a
+legacy checkpoint without data state emits a warning and restarts the data
+sequence, so it is not exact continuation. Legacy SFT checkpoints require
+`--init-from` (fresh optimizer); `sft --resume` requires the new versioned state.
+A save into a legacy directory publishes a generation and leaves the old flat
+files intact; subsequent reads follow `CURRENT`.
 
 `--data` enables sequential loading and honors `--batch-size` and the selected
 byte/BPE tokenizer. Text files are tokenized line by line; `.u32` files contain
@@ -145,7 +182,8 @@ assistant tokens in that window. JSONL input cycles at EOF.
 
 `sft --init-from DIR` loads pretrained model configuration, weights, and tokenizer,
 then starts a fresh AdamW optimizer and SFT step count. Without `--init-from`, SFT
-starts from random weights. This is initialization, not SFT optimizer resume.
+starts from random weights. Use `sft --resume DIR` to continue SFT with its saved
+optimizer and data position. `--init-from` and `--resume` are mutually exclusive.
 Use a separate `--checkpoint` directory to preserve the pretrained model.
 
 ## Generation and evaluation
@@ -169,7 +207,7 @@ model, not checkpoint-backed generation throughput.
   `tokenizer.pkl` or tiktoken encodings.
 - Upstream PyTorch checkpoints cannot be loaded.
 - KV cache is correct by parity test but is intentionally simple and not optimized.
-- SFT has no checkpoint resume, packed sequences, system messages, or tool execution.
+- SFT has no packed sequences, system messages, or tool execution.
 - Evaluation has no BPB or upstream CORE tasks yet.
 - Conversation history must fit the context; automatic history trimming and
   packed sequences are not implemented.

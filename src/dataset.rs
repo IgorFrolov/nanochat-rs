@@ -2,7 +2,7 @@ use crate::tokenizer::{ModelTokenizer, Tokenizer};
 use anyhow::{Context, Result};
 use std::{
     fs::File,
-    io::{BufRead, BufReader, Read},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
 };
 
@@ -88,5 +88,35 @@ impl StreamingDataset {
         let target = self.pending[1..sequence_length + 1].to_vec();
         self.pending.drain(..sequence_length);
         Ok(Some((input, target)))
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct StreamingState {
+    pub offset: u64,
+    pub pending: Vec<u32>,
+}
+impl StreamingDataset {
+    pub fn state(&mut self) -> Result<StreamingState> {
+        Ok(StreamingState {
+            offset: self.reader.stream_position()?,
+            pending: self.pending.clone(),
+        })
+    }
+    pub fn restore(&mut self, state: &StreamingState) -> Result<()> {
+        anyhow::ensure!(
+            state.offset <= self.reader.get_ref().metadata()?.len(),
+            "dataset cursor exceeds file size"
+        );
+        anyhow::ensure!(
+            state
+                .pending
+                .iter()
+                .all(|&id| (id as usize) < self.tokenizer.vocab_size()),
+            "invalid buffered token"
+        );
+        self.reader.seek(SeekFrom::Start(state.offset))?;
+        self.pending = state.pending.clone();
+        Ok(())
     }
 }

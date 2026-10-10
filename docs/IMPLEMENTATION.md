@@ -9,12 +9,12 @@
 | `ReLU^2` MLP | `src/model/mlp.rs` | implemented | model smoke | matches upstream activation |
 | `tokenizer.py` | `src/tokenizer.rs`, `src/bpe.rs` | Rust BPE subset | roundtrip/determinism tests | standalone byte-level BPE JSON format; pretraining integration; not tiktoken pickle-compatible |
 | `dataloader.py` | `src/dataloader.rs` | implemented subset | evaluation and training tests | deterministic in-memory windows |
-| dataset input | `src/dataset.rs` | implemented subset | long u32/block/EOF and batching tests | byte/BPE sequential cyclic windows; no shuffle/cursor resume yet |
+| dataset input | `src/dataset.rs` | implemented subset | long u32/block/EOF and batching tests | byte/BPE sequential cyclic windows; cursor and pending-token resume |
 | `optim.py` AdamW | `src/optimizer.rs` | implemented subset | uninterrupted vs restored optimizer update parity | decoupled decay, serializable single-device moments |
-| `checkpoint_manager.py` | `src/checkpoint.rs`, `src/optimizer.rs` | implemented subset | CLI/resume smoke | model and AdamW moments in separate SafeTensors; resume state is single-device |
+| `checkpoint_manager.py` | `src/checkpoint.rs`, `src/optimizer.rs`, `src/resume.rs` | implemented subset | exact resume, publication failure, process-kill tests | immutable generations and atomic CURRENT; single-device optimizer/data state |
 | `engine.py` | `src/inference.rs`, `src/model/cache.rs` | implemented subset | chunk/batch/GQA cache parity, greedy generation parity, CLI workflow | byte/BPE generation, greedy/top-k/top-p, naive KV cache |
 | `loss_eval.py` | `src/eval.rs` | implemented subset | CLI smoke | byte/BPE cross-entropy, no BPB yet |
-| SFT masked loss | `src/loss.rs`, `src/sft.rs` | implemented subset | masking/rendering/batch/CLI smoke tests | JSON and streaming JSONL; right-padded batches and pretrained initialization; no SFT optimizer resume or packed sequences |
+| SFT masked loss | `src/loss.rs`, `src/sft.rs` | implemented subset | masking/rendering/batch/CLI smoke tests | JSON and streaming JSONL; right-padded batches, pretrained initialization and SFT resume; no packed sequences |
 | benchmark tooling | `bench` CLI subcommand | implemented subset | manual CLI smoke | measured forward step time and tokens/sec |
 | RL / CORE eval | future modules | planned | - | not implemented |
 | Muon | future optimizer module | planned | - | not implemented |
@@ -42,3 +42,12 @@ It also checks BPE evaluation against explicitly tokenized input, tokenizer iden
 CLI checks reject empty input, zero batch sizes, and backwards resume step counts.
 CPU is the automated numerical test backend; Metal parity/performance is not
 established by those tests.
+
+`tests/reliability.rs` checks full model/moment tensor equality after interrupted
+inline, text-file, native `.u32`, JSON and JSONL training (byte/BPE), including
+shuffle/EOF boundaries and restored optimizer settings. It tests CLI SFT resume,
+changed-data/batch/mode rejection, and forced process termination after periodic
+publication. A checkpoint unit test injects failure before publication and checks
+that the prior generation remains readable. State restoration targets the current
+single-device implementation; no global device RNG is needed after loading weights
+because the model has no stochastic training layers.
