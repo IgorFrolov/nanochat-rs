@@ -29,12 +29,15 @@ enum Command {
     Train {
         #[arg(long, default_value_t = 4)]
         depth: usize,
-        #[arg(long, default_value_t = 128)]
-        seq_len: usize,
+        #[arg(long)]
+        seq_len: Option<usize>,
         #[arg(long, default_value_t = 100)]
         steps: usize,
-        #[arg(long, default_value_t = 1)]
-        batch_size: usize,
+        /// Save progress every N steps (0 saves only at completion).
+        #[arg(long, default_value_t = 0)]
+        checkpoint_every: usize,
+        #[arg(long)]
+        batch_size: Option<usize>,
         #[arg(long, default_value = "cpu")]
         device: String,
         #[arg(long, default_value = "checkpoints/d4")]
@@ -56,12 +59,15 @@ enum Command {
         conversation: String,
         #[arg(long, default_value_t = 4)]
         depth: usize,
-        #[arg(long, default_value_t = 128)]
-        seq_len: usize,
+        #[arg(long)]
+        seq_len: Option<usize>,
         #[arg(long, default_value_t = 100)]
         steps: usize,
-        #[arg(long, default_value_t = 1)]
-        batch_size: usize,
+        /// Save progress every N steps (0 saves only at completion).
+        #[arg(long, default_value_t = 0)]
+        checkpoint_every: usize,
+        #[arg(long)]
+        batch_size: Option<usize>,
         #[arg(long, default_value = "cpu")]
         device: String,
         #[arg(long, default_value = "checkpoints/sft")]
@@ -69,8 +75,10 @@ enum Command {
         #[arg(long)]
         tokenizer: Option<String>,
         /// Initialize from pretrained weights with a fresh optimizer.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "resume")]
         init_from: Option<String>,
+        #[arg(long)]
+        resume: Option<String>,
     },
     Chat {
         #[arg(long)]
@@ -186,6 +194,7 @@ fn main() -> Result<()> {
             depth,
             seq_len,
             steps,
+            checkpoint_every,
             batch_size,
             device,
             checkpoint,
@@ -195,6 +204,19 @@ fn main() -> Result<()> {
             resume,
         } => {
             let d = resolve_device(&device)?;
+            let resume = resume
+                .map(checkpoint::resolve)
+                .transpose()?
+                .map(|p| p.to_string_lossy().into_owned());
+            let saved = resume
+                .as_deref()
+                .map(checkpoint::load_training_state)
+                .transpose()?
+                .flatten();
+            let seq_len =
+                seq_len.unwrap_or_else(|| saved.as_ref().map_or(128, |s| s.train.sequence_length));
+            let batch_size =
+                batch_size.unwrap_or_else(|| saved.as_ref().map_or(1, |s| s.train.batch_size));
             let selected = checkpoint::select_tokenizer(resume.as_deref(), tokenizer.as_deref())?;
             let c = if let Some(dir) = resume.as_deref() {
                 checkpoint::load_config(dir)?
@@ -211,6 +233,7 @@ fn main() -> Result<()> {
             };
             let t = TrainConfig {
                 steps,
+                checkpoint_every,
                 batch_size,
                 sequence_length: seq_len,
                 checkpoint,
@@ -241,22 +264,39 @@ fn main() -> Result<()> {
             depth,
             seq_len,
             steps,
+            checkpoint_every,
             batch_size,
             device,
             checkpoint,
             tokenizer,
             init_from,
+            resume,
         } => {
             let d = resolve_device(&device)?;
-            let selected =
-                checkpoint::select_tokenizer(init_from.as_deref(), tokenizer.as_deref())?;
-            let c = if let Some(dir) = init_from.as_deref() {
+            let input = init_from
+                .as_deref()
+                .or(resume.as_deref())
+                .map(checkpoint::resolve)
+                .transpose()?
+                .map(|p| p.to_string_lossy().into_owned());
+            let saved = if resume.is_some() {
+                checkpoint::load_training_state(input.as_deref().unwrap())?
+            } else {
+                None
+            };
+            let seq_len =
+                seq_len.unwrap_or_else(|| saved.as_ref().map_or(128, |s| s.train.sequence_length));
+            let batch_size =
+                batch_size.unwrap_or_else(|| saved.as_ref().map_or(1, |s| s.train.batch_size));
+            let selected = checkpoint::select_tokenizer(input.as_deref(), tokenizer.as_deref())?;
+            let c = if let Some(dir) = input.as_deref() {
                 checkpoint::load_config(dir)?
             } else {
                 GptConfig::from_depth(depth, selected.vocab_size(), seq_len)
             };
             let t = TrainConfig {
                 steps,
+                checkpoint_every,
                 batch_size,
                 sequence_length: seq_len,
                 checkpoint,
@@ -270,13 +310,22 @@ fn main() -> Result<()> {
                     "Metal/MPS"
                 }
             );
-            nanochat_rs::sft::train_from_checkpoint(
+            nanochat_rs::sft::train_run(
                 c,
                 t,
                 &conversation,
                 tokenizer.as_deref(),
                 &d,
-                init_from.as_deref(),
+                if init_from.is_some() {
+                    input.as_deref()
+                } else {
+                    None
+                },
+                if resume.is_some() {
+                    input.as_deref()
+                } else {
+                    None
+                },
             )?;
         }
         Command::Chat {
@@ -287,6 +336,7 @@ fn main() -> Result<()> {
             conversation,
         } => {
             let d = Device::Cpu;
+            let dir = checkpoint::resolve(&dir)?.to_string_lossy().into_owned();
             let (model, _vars, _) = nanochat_rs::eval::load_model(&dir, &d)?;
             let tokenizer = checkpoint::load_tokenizer(&dir)?;
             let mut history = Conversation {

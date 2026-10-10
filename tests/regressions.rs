@@ -282,8 +282,10 @@ fn cli_bpe_pretrain_sft_chat_and_invalid_inputs() -> Result<()> {
         "",
         true,
     )?;
-    assert!(pre.join("bpe-tokenizer.json").exists());
-    let original = std::fs::read(pre.join("model.safetensors"))?;
+    assert!(checkpoint::resolve(&pre)?
+        .join("bpe-tokenizer.json")
+        .exists());
+    let original = std::fs::read(checkpoint::resolve(&pre)?.join("model.safetensors"))?;
     cli(
         &[
             "sft",
@@ -302,8 +304,14 @@ fn cli_bpe_pretrain_sft_chat_and_invalid_inputs() -> Result<()> {
         true,
     )?;
     // Compare tensors, since serialization order is unspecified.
-    let before = candle_core::safetensors::load(pre.join("model.safetensors"), &Device::Cpu)?;
-    let copied = candle_core::safetensors::load(copy.join("model.safetensors"), &Device::Cpu)?;
+    let before = candle_core::safetensors::load(
+        checkpoint::resolve(&pre)?.join("model.safetensors"),
+        &Device::Cpu,
+    )?;
+    let copied = candle_core::safetensors::load(
+        checkpoint::resolve(&copy)?.join("model.safetensors"),
+        &Device::Cpu,
+    )?;
     for (name, tensor) in &before {
         assert_eq!(
             tensor.flatten_all()?.to_vec1::<f32>()?,
@@ -333,7 +341,10 @@ fn cli_bpe_pretrain_sft_chat_and_invalid_inputs() -> Result<()> {
         checkpoint::load_tokenizer(&sft)?,
         checkpoint::load_tokenizer(&pre)?
     );
-    assert_eq!(std::fs::read(pre.join("model.safetensors"))?, original);
+    assert_eq!(
+        std::fs::read(checkpoint::resolve(&pre)?.join("model.safetensors"))?,
+        original
+    );
     let chat = cli(
         &[
             "chat",
@@ -377,7 +388,10 @@ fn cli_bpe_pretrain_sft_chat_and_invalid_inputs() -> Result<()> {
     )?;
     assert!(err.contains("less than checkpoint step"));
     assert_eq!(checkpoint::load_step(&pre)?, 1);
-    assert_eq!(std::fs::read(pre.join("model.safetensors"))?, original);
+    assert_eq!(
+        std::fs::read(checkpoint::resolve(&pre)?.join("model.safetensors"))?,
+        original
+    );
     for extra in [
         vec!["--text", ""],
         vec!["--text", "", "--tokenizer", path(&tok)],

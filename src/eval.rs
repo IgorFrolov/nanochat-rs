@@ -4,6 +4,10 @@ use candle_core::{DType, Device};
 use candle_nn::{VarBuilder, VarMap};
 
 pub fn load_model(dir: &str, device: &Device) -> Result<(Gpt, VarMap, GptConfig)> {
+    let pinned = checkpoint::resolve(dir)?;
+    let dir = pinned
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("checkpoint path is not UTF-8"))?;
     let config = checkpoint::load_config(dir)?;
     let vars = VarMap::new();
     let model = Gpt::new(
@@ -16,6 +20,10 @@ pub fn load_model(dir: &str, device: &Device) -> Result<(Gpt, VarMap, GptConfig)
 }
 
 pub fn validation_loss(dir: &str, text: &str, steps: usize, device: &Device) -> Result<f32> {
+    let pinned = checkpoint::resolve(dir)?;
+    let dir = pinned
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("checkpoint path is not UTF-8"))?;
     let (model, _vars, config) = load_model(dir, device)?;
     let tokenizer = checkpoint::load_tokenizer(dir)?;
     let encoded = tokenizer.encode(text);

@@ -19,7 +19,7 @@ impl DeviceKind {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct GptConfig {
     pub depth: usize,
     pub vocab_size: usize,
@@ -80,6 +80,8 @@ pub struct TrainConfig {
     pub weight_decay: f64,
     pub seed: u64,
     pub checkpoint: String,
+    #[serde(default)]
+    pub checkpoint_every: usize,
 }
 
 impl Default for TrainConfig {
@@ -92,6 +94,7 @@ impl Default for TrainConfig {
             weight_decay: 0.1,
             seed: 42,
             checkpoint: "checkpoints/d4".into(),
+            checkpoint_every: 0,
         }
     }
 }

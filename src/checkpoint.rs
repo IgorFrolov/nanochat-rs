@@ -2,7 +2,10 @@ use crate::config::GptConfig;
 use crate::tokenizer::Tokenizer;
 use anyhow::{Context, Result};
 use candle_nn::VarMap;
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 pub fn save(
     dir: impl AsRef<Path>,
@@ -26,17 +29,17 @@ pub fn save(
         .context("saving model safetensors")
 }
 pub fn load_config(dir: impl AsRef<Path>) -> Result<GptConfig> {
-    Ok(serde_json::from_slice(&fs::read(
-        dir.as_ref().join("config.json"),
-    )?)?)
+    let dir = resolve(dir)?;
+    Ok(serde_json::from_slice(&fs::read(dir.join("config.json"))?)?)
 }
 pub fn load_vars(dir: impl AsRef<Path>, vars: &mut VarMap) -> Result<()> {
-    vars.load(dir.as_ref().join("model.safetensors"))
+    vars.load(resolve(dir)?.join("model.safetensors"))
         .context("loading model safetensors")
 }
 pub fn load_step(dir: impl AsRef<Path>) -> Result<usize> {
+    let dir = resolve(dir)?;
     let state: serde_json::Value =
-        serde_json::from_slice(&fs::read(dir.as_ref().join("training_state.json"))?)?;
+        serde_json::from_slice(&fs::read(dir.join("training_state.json"))?)?;
     state["step"]
         .as_u64()
         .map(|step| step as usize)
@@ -47,7 +50,8 @@ pub fn load_step(dir: impl AsRef<Path>) -> Result<usize> {
 /// from their BPE artifact and validated against the model vocabulary.
 pub fn load_tokenizer(dir: impl AsRef<Path>) -> Result<crate::tokenizer::ModelTokenizer> {
     use crate::tokenizer::ModelTokenizer;
-    let dir = dir.as_ref();
+    let resolved = resolve(dir)?;
+    let dir = resolved.as_path();
     let metadata: serde_json::Value =
         serde_json::from_slice(&fs::read(dir.join("tokenizer.json"))?)?;
     let bpe_path = dir.join("bpe-tokenizer.json");
@@ -127,4 +131,145 @@ pub fn save_with_tokenizer(
         serde_json::to_vec_pretty(&metadata)?,
     )?;
     Ok(())
+}
+
+/// Pin one published generation before reading multiple checkpoint files.
+/// Direct legacy directories and already-resolved generations remain readable.
+pub fn resolve(dir: impl AsRef<Path>) -> Result<PathBuf> {
+    let dir = dir.as_ref();
+    match fs::read_to_string(dir.join("CURRENT")) {
+        Ok(name) => {
+            let name = name.trim();
+            anyhow::ensure!(
+                !name.is_empty() && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-'),
+                "invalid checkpoint CURRENT pointer"
+            );
+            let generation = dir.join("snapshots").join(name);
+            anyhow::ensure!(
+                generation.is_dir(),
+                "checkpoint CURRENT generation is missing"
+            );
+            Ok(generation)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(dir.to_path_buf()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn load_training_state(dir: impl AsRef<Path>) -> Result<Option<crate::resume::TrainingState>> {
+    let value: serde_json::Value =
+        serde_json::from_slice(&fs::read(resolve(dir)?.join("training_state.json"))?)?;
+    if value.get("version").is_none() {
+        return Ok(None);
+    }
+    let state: crate::resume::TrainingState = serde_json::from_value(value)?;
+    anyhow::ensure!(
+        state.version == 1,
+        "unsupported training state version {}",
+        state.version
+    );
+    Ok(Some(state))
+}
+
+/// Publish a complete immutable generation, including optimizer and data state.
+pub fn save_training(
+    dir: impl AsRef<Path>,
+    config: &GptConfig,
+    tokenizer: &crate::tokenizer::ModelTokenizer,
+    vars: &VarMap,
+    optimizer: &crate::optimizer::AdamWState,
+    state: &crate::resume::TrainingState,
+) -> Result<()> {
+    anyhow::ensure!(
+        optimizer.step == state.step,
+        "optimizer/state step mismatch"
+    );
+    publish(dir.as_ref(), |staging| {
+        save_with_tokenizer(staging, config, tokenizer, vars, state.step)?;
+        optimizer.save(staging.join("optimizer.safetensors"))?;
+        fs::write(
+            staging.join("training_state.json"),
+            serde_json::to_vec_pretty(state)?,
+        )?;
+        Ok(())
+    })
+}
+
+fn sync_dir(dir: &Path) -> Result<()> {
+    fs::File::open(dir)?.sync_all()?;
+    Ok(())
+}
+
+fn publish(dir: &Path, write: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    fs::create_dir_all(dir)?;
+    let snapshots = dir.join("snapshots");
+    fs::create_dir_all(&snapshots)?;
+    let name = format!(
+        "{}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    );
+    let staging = snapshots.join(format!(".pending-{name}"));
+    fs::create_dir(&staging)?;
+    let pointer = dir.join(format!(".CURRENT-{name}"));
+    let result = (|| {
+        write(&staging)?;
+        for entry in fs::read_dir(&staging)? {
+            fs::File::open(entry?.path())?.sync_all()?;
+        }
+        sync_dir(&staging)?;
+        fs::rename(&staging, snapshots.join(&name))?;
+        sync_dir(&snapshots)?;
+        fs::write(&pointer, format!("{name}\n"))?;
+        fs::File::open(&pointer)?.sync_all()?;
+        // Persist the snapshots directory entry before the commit point.
+        sync_dir(dir)?;
+        fs::rename(&pointer, dir.join("CURRENT"))?;
+        sync_dir(dir)?;
+        if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
+            sync_dir(parent)?;
+        }
+        Ok(())
+    })();
+    // Never remove a published generation: concurrent readers may have pinned it.
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&staging);
+        let _ = fs::remove_file(&pointer);
+    }
+    result
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+    #[test]
+    fn failed_write_does_not_replace_published_generation() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!("nanochat-atomic-{}", std::process::id()));
+        fs::create_dir_all(&dir)?;
+        publish(&dir, |p| {
+            fs::write(p.join("sentinel"), "old")?;
+            Ok(())
+        })?;
+        let pinned = resolve(&dir)?;
+        let failure = publish(&dir, |p| {
+            fs::write(p.join("sentinel"), "partial")?;
+            anyhow::bail!("injected failure before publication")
+        });
+        assert!(failure.is_err());
+        assert_eq!(resolve(&dir)?, pinned);
+        assert_eq!(fs::read_to_string(pinned.join("sentinel"))?, "old");
+        publish(&dir, |p| {
+            fs::write(p.join("sentinel"), "new")?;
+            Ok(())
+        })?;
+        assert_eq!(fs::read_to_string(resolve(&dir)?.join("sentinel"))?, "new");
+        assert_eq!(fs::read_to_string(pinned.join("sentinel"))?, "old");
+        fs::remove_dir_all(dir)?;
+        Ok(())
+    }
 }

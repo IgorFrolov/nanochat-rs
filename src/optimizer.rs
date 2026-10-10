@@ -108,3 +108,42 @@ impl AdamWState {
         Ok(())
     }
 }
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct OptimizerSettings {
+    pub learning_rate: f64,
+    pub weight_decay: f64,
+    pub beta1: f64,
+    pub beta2: f64,
+    pub eps: f64,
+}
+impl AdamWState {
+    pub fn settings(&self) -> OptimizerSettings {
+        OptimizerSettings {
+            learning_rate: self.learning_rate,
+            weight_decay: self.weight_decay,
+            beta1: self.beta1,
+            beta2: self.beta2,
+            eps: self.eps,
+        }
+    }
+    pub fn restore_settings(&mut self, s: &OptimizerSettings) -> Result<()> {
+        anyhow::ensure!(
+            s.learning_rate.is_finite()
+                && s.learning_rate > 0.0
+                && s.weight_decay.is_finite()
+                && s.weight_decay >= 0.0
+                && (0.0..1.0).contains(&s.beta1)
+                && (0.0..1.0).contains(&s.beta2)
+                && s.eps.is_finite()
+                && s.eps > 0.0,
+            "invalid saved optimizer settings"
+        );
+        self.learning_rate = s.learning_rate;
+        self.weight_decay = s.weight_decay;
+        self.beta1 = s.beta1;
+        self.beta2 = s.beta2;
+        self.eps = s.eps;
+        Ok(())
+    }
+}

@@ -1,3 +1,4 @@
+use crate::resume::{LoaderState, SourceIdentity, TrainingState};
 use crate::{
     checkpoint,
     config::{GptConfig, TrainConfig},
@@ -9,7 +10,7 @@ use crate::{
 use anyhow::{Context, Result};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::{VarBuilder, VarMap};
-use std::io::BufRead;
+use std::io::{BufRead, Seek, SeekFrom};
 
 pub struct SftBatch {
     pub input_ids: Vec<u32>,
@@ -76,13 +77,64 @@ pub fn train_from_checkpoint(
     device: &Device,
     init_from: Option<&str>,
 ) -> Result<()> {
-    train.validate(&config, 0)?;
-    let tokenizer = checkpoint::select_tokenizer(init_from, tokenizer_path)?;
+    train_run(
+        config,
+        train,
+        conversation_path,
+        tokenizer_path,
+        device,
+        init_from,
+        None,
+    )
+}
+
+pub fn train_run(
+    config: GptConfig,
+    mut train: TrainConfig,
+    conversation_path: &str,
+    tokenizer_path: Option<&str>,
+    device: &Device,
+    init_from: Option<&str>,
+    resume: Option<&str>,
+) -> Result<()> {
+    anyhow::ensure!(
+        init_from.is_none() || resume.is_none(),
+        "--init-from and --resume are mutually exclusive"
+    );
+    let pinned = init_from.or(resume).map(checkpoint::resolve).transpose()?;
+    let input = pinned
+        .as_ref()
+        .map(|p| p.to_str().context("checkpoint path is not UTF-8"))
+        .transpose()?;
+    let saved = if resume.is_some() {
+        Some(checkpoint::load_training_state(input.unwrap())?.context(
+            "legacy SFT checkpoint has no data state; use --init-from to start a new run",
+        )?)
+    } else {
+        None
+    };
+    let start_step = saved.as_ref().map_or(0, |s| s.step);
+    train.validate(&config, start_step)?;
+    if let Some(dir) = input {
+        anyhow::ensure!(
+            checkpoint::load_config(dir)? == config,
+            "SFT model configuration differs from checkpoint"
+        );
+    }
+    let tokenizer = checkpoint::select_tokenizer(input, tokenizer_path)?;
     tokenizer.validate_vocab(config.vocab_size)?;
     let is_jsonl = std::path::Path::new(conversation_path)
         .extension()
         .and_then(|x| x.to_str())
         == Some("jsonl");
+    let source_kind = if is_jsonl { "jsonl" } else { "json" };
+    let identity = SourceIdentity::file(conversation_path, source_kind)?;
+    if let Some(state) = &saved {
+        state.validate("sft", &identity, &train, device)?;
+        train.learning_rate = state.optimizer.learning_rate;
+        train.weight_decay = state.optimizer.weight_decay;
+        train.seed = state.train.seed;
+    }
     let single = if is_jsonl {
         None
     } else {
@@ -97,7 +149,7 @@ pub fn train_from_checkpoint(
         config.clone(),
         VarBuilder::from_varmap(&vars, DType::F32, device).pp("model"),
     )?;
-    if let Some(dir) = init_from {
+    if let Some(dir) = input {
         checkpoint::load_vars(dir, &mut vars)?;
     }
     let mut optimizer = AdamWState::new(&vars, train.learning_rate, train.weight_decay)?;
@@ -108,7 +160,57 @@ pub fn train_from_checkpoint(
     } else {
         None
     };
-    for step in 0..train.steps {
+    if let Some(state) = &saved {
+        match (&mut reader, &state.loader) {
+            (
+                Some(reader),
+                LoaderState::Sft {
+                    offset: Some(offset),
+                },
+            ) => {
+                anyhow::ensure!(
+                    *offset <= reader.get_ref().metadata()?.len(),
+                    "SFT cursor exceeds file size"
+                );
+                reader.seek(SeekFrom::Start(*offset))?;
+            }
+            (None, LoaderState::Sft { offset: None }) => {}
+            _ => anyhow::bail!("checkpoint SFT data loader type mismatch"),
+        }
+        optimizer.load(
+            std::path::Path::new(input.unwrap()).join("optimizer.safetensors"),
+            state.step,
+        )?;
+        optimizer.restore_settings(&state.optimizer)?;
+    }
+    let save_progress = |reader: &mut Option<std::io::BufReader<std::fs::File>>,
+                         optimizer: &AdamWState|
+     -> Result<()> {
+        anyhow::ensure!(
+            SourceIdentity::file(conversation_path, source_kind)? == identity,
+            "dataset changed during training; checkpoint not published"
+        );
+        let offset = reader.as_mut().map(|r| r.stream_position()).transpose()?;
+        let state = TrainingState {
+            version: 1,
+            step: optimizer.step,
+            mode: "sft".into(),
+            backend: crate::resume::backend(device),
+            train: train.clone(),
+            source: identity.clone(),
+            loader: LoaderState::Sft { offset },
+            optimizer: optimizer.settings(),
+        };
+        checkpoint::save_training(
+            &train.checkpoint,
+            &config,
+            &tokenizer,
+            &vars,
+            optimizer,
+            &state,
+        )
+    };
+    for step in start_step..train.steps {
         let mut examples = Vec::with_capacity(train.batch_size);
         for _ in 0..train.batch_size {
             let rendered = if let Some(single) = &single {
@@ -149,6 +251,12 @@ pub fn train_from_checkpoint(
         let logits = model.forward(&input_ids, None)?;
         let loss = masked_cross_entropy(&logits, &target_ids, &mask)?;
         optimizer.backward_step(&loss)?;
+        if train.checkpoint_every > 0
+            && optimizer.step % train.checkpoint_every == 0
+            && optimizer.step < train.steps
+        {
+            save_progress(&mut reader, &optimizer)?;
+        }
         if step == 0 || (step + 1) % 10 == 0 {
             println!(
                 "sft step {}/{} loss={:.5}",
@@ -158,6 +266,5 @@ pub fn train_from_checkpoint(
             );
         }
     }
-    checkpoint::save_with_tokenizer(&train.checkpoint, &config, &tokenizer, &vars, train.steps)?;
-    optimizer.save(std::path::Path::new(&train.checkpoint).join("optimizer.safetensors"))
+    save_progress(&mut reader, &optimizer)
 }

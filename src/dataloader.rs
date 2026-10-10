@@ -1,6 +1,8 @@
 use anyhow::{bail, Result};
 use candle_core::{Device, Tensor};
-use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
+use rand::{seq::SliceRandom, SeedableRng};
+use rand_chacha::ChaCha12Rng;
+use serde::{Deserialize, Serialize};
 
 pub struct DataLoader {
     tokens: Vec<u32>,
@@ -8,7 +10,7 @@ pub struct DataLoader {
     seq_len: usize,
     cursor: usize,
     order: Vec<usize>,
-    rng: StdRng,
+    rng: ChaCha12Rng,
 }
 impl DataLoader {
     pub fn new(tokens: Vec<u32>, batch_size: usize, seq_len: usize, seed: u64) -> Result<Self> {
@@ -16,7 +18,7 @@ impl DataLoader {
             bail!("dataset needs at least seq_len+1 tokens and nonzero batch size")
         }
         let mut order: Vec<_> = (0..tokens.len() - seq_len).collect();
-        let mut rng = StdRng::seed_from_u64(seed);
+        let mut rng = ChaCha12Rng::seed_from_u64(seed);
         order.shuffle(&mut rng);
         Ok(Self {
             tokens,
@@ -44,5 +46,34 @@ impl DataLoader {
             Tensor::from_vec(xs, (self.batch_size, self.seq_len), device)?,
             Tensor::from_vec(ys, (self.batch_size, self.seq_len), device)?,
         ))
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DataLoaderState {
+    pub cursor: usize,
+    pub order: Vec<usize>,
+    pub rng: ChaCha12Rng,
+}
+impl DataLoader {
+    pub fn state(&self) -> DataLoaderState {
+        DataLoaderState {
+            cursor: self.cursor,
+            order: self.order.clone(),
+            rng: self.rng.clone(),
+        }
+    }
+    pub fn restore(&mut self, state: &DataLoaderState) -> Result<()> {
+        let mut sorted = state.order.clone();
+        sorted.sort_unstable();
+        anyhow::ensure!(
+            sorted == (0..self.tokens.len() - self.seq_len).collect::<Vec<_>>()
+                && state.cursor <= state.order.len(),
+            "invalid loader permutation/cursor"
+        );
+        self.cursor = state.cursor;
+        self.order = state.order.clone();
+        self.rng = state.rng.clone();
+        Ok(())
     }
 }
